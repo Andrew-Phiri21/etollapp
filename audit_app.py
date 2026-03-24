@@ -32,7 +32,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. CORE LOGIC ---
+# --- 2. CORE LOGIC (CORRECTION-AWARE) ---
 def clean_vehicle_reg(reg):
     if pd.isna(reg): return ""
     reg = str(reg).strip().upper().replace(" ", "")
@@ -50,12 +50,13 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     df['Audit_Reason'] = ""
     df['_amt_num'] = pd.to_numeric(df['Amount Collected(ZMW)'], errors='coerce').fillna(0)
 
-    # A. Reversal Logic
+    # A. REVERSAL LOGIC (Step 1: Identify)
     receipts_with_negative = df.loc[df['_amt_num'] < 0, 'Receipt No'].unique()
     df.loc[df['Receipt No'].isin(receipts_with_negative), 'Reversal_Status'] = 'Reversed'
-    df.loc[df['Reversal_Status'] == 'Reversed', 'Audit_Reason'] = "Reversal Pair"
+    # NOTE: We do NOT set Audit_Reason to "Reversal Pair" here anymore. 
+    # These are treated as internal system corrections and suppressed from leakage.
 
-    # B. Duplicate Check
+    # B. DUPLICATE CHECK (Only for non-reversed transactions)
     df = df.sort_values(by=['reg_clean', 'Card Number', 'DateTime'])
     active_df = df[df['Reversal_Status'] == 'No'].copy()
     active_indices = active_df.index.tolist()
@@ -81,35 +82,35 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
                     df.at[nxt_idx, 'Is_Excess_Duplicate'] = True
                     df.at[nxt_idx, 'Audit_Reason'] = "Duplicate Trans"
 
-    # C. UNIVERSAL INCONSISTENCY LOGIC (Handles Reversals via Absolute Value)
+    # C. INCONSISTENCY LOGIC (Step 2: Ignore Reversed Amounts)
     def is_genuinely_inconsistent(amounts):
-        # Convert all amounts to positive (absolute) for comparison
-        # This makes 300 and -300 identical in the eyes of this check
+        # We only care about absolute values for unique price checking
         abs_unique_amts = {abs(float(a)) for a in amounts if a != 0}
-        
         if len(abs_unique_amts) <= 1: return False
         
-        # Legitimate Discount Brackets (Positive values only now)
         small_veh_discount = {2.0, 5.0, 20.0}
         bus_discount = {10.0, 15.0, 40.0}
         
-        # Check if the set of absolute prices is a subset of a discount group
         if abs_unique_amts.issubset(small_veh_discount): return False
         if abs_unique_amts.issubset(bus_discount): return False
-        
         return True
 
+    # IMPORTANT: We group only the "active" (non-reversed) transactions
     inconsistent_regs = []
-    grouped = df[df['reg_clean'] != ""].groupby('reg_clean')['_amt_num'].apply(list)
+    # Only analyze plates where the transaction is currently valid (Reversal_Status == 'No')
+    valid_txs = df[(df['reg_clean'] != "") & (df['Reversal_Status'] == 'No')]
+    grouped = valid_txs.groupby('reg_clean')['_amt_num'].apply(list)
+    
     for reg, amounts in grouped.items():
         if is_genuinely_inconsistent(amounts):
             inconsistent_regs.append(reg)
     
-    df.loc[df['reg_clean'].isin(inconsistent_regs), 'Inconsistent_Class'] = 'Yes'
+    df.loc[(df['reg_clean'].isin(inconsistent_regs)) & (df['Reversal_Status'] == 'No'), 'Inconsistent_Class'] = 'Yes'
     df.loc[(df['Inconsistent_Class'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Inconsistent Class"
 
-    # D. Irregular Amount Check
+    # D. IRREGULAR AMOUNT CHECK (Only for non-reversed)
     def check_irregular(row):
+        if row['Reversal_Status'] == 'Reversed': return "No"
         try:
             amt = abs(float(row['Amount Collected(ZMW)']))
             if amt not in [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 400, 600, 1000, 3000]: return "Yes"
@@ -134,19 +135,23 @@ if uploaded_file:
     
     df = st.session_state.main_df
     
+    # CALCULATIONS
     static_gross = df['_amt_num'].sum()
     static_total_count = len(df)
+    
+    # Leakage now only counts rows with a valid Audit_Reason 
+    # (Reversal pairs no longer have one, so they don't inflate this count)
     static_leakage_df = df[df['Audit_Reason'] != ""]
     static_leakage_total = static_leakage_df['_amt_num'].sum()
     static_leakage_count = len(static_leakage_df)
     static_net = static_gross - static_leakage_total
 
-    st.info("The figures below represent the TOTAL analysis of the uploaded file.")
+    st.info("Metrics reflect the TOTAL file. Reversed/Corrected errors are excluded from leakage counts.")
     
     db1, db2, db3 = st.columns(3)
-    db1.metric("Amount as per System", f"K{static_gross:,.2f}", f"{static_total_count} Trans")
-    db2.metric("Amount to be reviewed", f"K{static_leakage_total:,.2f}", f"{static_leakage_count} Flags", delta_color="inverse")
-    db3.metric("Reconciled Revenue", f"K{static_net:,.2f}", "Verified")
+    db1.metric("Overall System Gross", f"K{static_gross:,.2f}", f"{static_total_count} Trans")
+    db2.metric("Total Identified Leakage", f"K{static_leakage_total:,.2f}", f"{static_leakage_count} Flags", delta_color="inverse")
+    db3.metric("Final Reconciled Revenue", f"K{static_net:,.2f}", "Verified")
 
     st.markdown("---")
 
