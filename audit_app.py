@@ -3,7 +3,7 @@ import pandas as pd
 import io
 from datetime import timedelta, datetime
 
-# --- 1. SETTINGS & VISIBILITY FIX ---
+# --- 1. SETTINGS & VISIBILITY ---
 st.set_page_config(page_title="E-toll Analysis Solution", page_icon="⚖️", layout="wide")
 
 st.markdown("""
@@ -32,7 +32,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. CORE LOGIC WITH DISCOUNT EXCEPTION ---
+# --- 2. CORE LOGIC ---
 def clean_vehicle_reg(reg):
     if pd.isna(reg): return ""
     reg = str(reg).strip().upper().replace(" ", "")
@@ -81,26 +81,24 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
                     df.at[nxt_idx, 'Is_Excess_Duplicate'] = True
                     df.at[nxt_idx, 'Audit_Reason'] = "Duplicate Trans"
 
-    # C. REVISED: Inconsistency Logic with Discount Exception
-    # Discount Brackets: 
-    # Small Vehicles: {2, 5, 20}
-    # Buses/Medium: {10, 15, 40}
-    
+    # C. UNIVERSAL INCONSISTENCY LOGIC (Handles Reversals via Absolute Value)
     def is_genuinely_inconsistent(amounts):
-        unique_amts = set(amounts)
-        if len(unique_amts) <= 1: return False
+        # Convert all amounts to positive (absolute) for comparison
+        # This makes 300 and -300 identical in the eyes of this check
+        abs_unique_amts = {abs(float(a)) for a in amounts if a != 0}
         
-        # Define valid discount groups
-        small_veh_discount = {2, 5, 20, -2, -5, -20}
-        bus_discount = {10, 15, 40, -10, 15, -40}
+        if len(abs_unique_amts) <= 1: return False
         
-        # If all prices paid belong to the same discount group, it's NOT an inconsistency
-        if unique_amts.issubset(small_veh_discount): return False
-        if unique_amts.issubset(bus_discount): return False
+        # Legitimate Discount Brackets (Positive values only now)
+        small_veh_discount = {2.0, 5.0, 20.0}
+        bus_discount = {10.0, 15.0, 40.0}
+        
+        # Check if the set of absolute prices is a subset of a discount group
+        if abs_unique_amts.issubset(small_veh_discount): return False
+        if abs_unique_amts.issubset(bus_discount): return False
         
         return True
 
-    # Group by reg and check prices
     inconsistent_regs = []
     grouped = df[df['reg_clean'] != ""].groupby('reg_clean')['_amt_num'].apply(list)
     for reg, amounts in grouped.items():
@@ -108,13 +106,13 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
             inconsistent_regs.append(reg)
     
     df.loc[df['reg_clean'].isin(inconsistent_regs), 'Inconsistent_Class'] = 'Yes'
-    df.loc[(df['Inconsistent_Class'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Inconsistent Class (Non-Discount)"
+    df.loc[(df['Inconsistent_Class'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Inconsistent Class"
 
     # D. Irregular Amount Check
     def check_irregular(row):
         try:
             amt = abs(float(row['Amount Collected(ZMW)']))
-            if amt not in [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 400, 600, 1000, 3000, -50, -200, -300, -400, -600, -1000, -3000]: return "Yes"
+            if amt not in [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 400, 600, 1000, 3000]: return "Yes"
         except: pass
         return "No"
 
@@ -123,7 +121,7 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     
     return df
 
-# --- 3. UI & STATIC DASHBOARD ---
+# --- 3. UI & DASHBOARD ---
 st.title("⚖️ E-toll Analysis Solution")
 
 st.sidebar.title("🔍 Audit Filters")
@@ -146,9 +144,9 @@ if uploaded_file:
     st.info("The figures below represent the TOTAL analysis of the uploaded file.")
     
     db1, db2, db3 = st.columns(3)
-    db1.metric("System Amount", f"K{static_gross:,.2f}", f"{static_total_count} Trans")
-    db2.metric("Amount to Review", f"K{static_leakage_total:,.2f}", f"{static_leakage_count} Flags", delta_color="inverse")
-    db3.metric("Reconciled Amount", f"K{static_net:,.2f}", "Verified")
+    db1.metric("Amount as per System", f"K{static_gross:,.2f}", f"{static_total_count} Trans")
+    db2.metric("Amount to be reviewed", f"K{static_leakage_total:,.2f}", f"{static_leakage_count} Flags", delta_color="inverse")
+    db3.metric("Reconciled Revenue", f"K{static_net:,.2f}", "Verified")
 
     st.markdown("---")
 
