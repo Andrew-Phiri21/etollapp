@@ -4,9 +4,8 @@ import io
 from datetime import timedelta, datetime
 
 # --- 1. SETTINGS & VISIBILITY FIX ---
-st.set_page_config(page_title="NRFA - E-toll Analysis", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="E-toll Analysis Solution", page_icon="⚖️", layout="wide")
 
-# Force Black Text for Metrics
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] { color: black !important; font-size: 1.8rem !important; }
@@ -17,10 +16,23 @@ st.markdown("""
         padding: 15px; 
         border-radius: 10px;
     }
+    footer {visibility: hidden;}
+    .footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        background-color: white;
+        color: #888;
+        text-align: center;
+        padding: 10px;
+        font-family: monospace;
+        border-top: 1px solid #eee;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. CORE ORIGINAL LOGIC ---
+# --- 2. CORE ORIGINAL LOGIC + NEW INCONSISTENCY CHECK ---
 def clean_vehicle_reg(reg):
     if pd.isna(reg): return ""
     reg = str(reg).strip().upper().replace(" ", "")
@@ -34,22 +46,22 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     df['Is_Excess_Duplicate'] = False 
     df['Reversal_Status'] = 'No'
     df['Irregular_Charge'] = 'No'
+    df['Inconsistent_Class'] = 'No' # New Flag
     df['Audit_Reason'] = ""
     df['_amt_num'] = pd.to_numeric(df['Amount Collected(ZMW)'], errors='coerce').fillna(0)
 
-    # Reversal Logic
+    # A. Reversal Logic
     receipts_with_negative = df.loc[df['_amt_num'] < 0, 'Receipt No'].unique()
     df.loc[df['Receipt No'].isin(receipts_with_negative), 'Reversal_Status'] = 'Reversed'
     df.loc[df['Reversal_Status'] == 'Reversed', 'Audit_Reason'] = "Reversal Pair"
 
-    # Duplicate Check
+    # B. Duplicate Check (5-min Rule)
     df = df.sort_values(by=['reg_clean', 'Card Number', 'DateTime'])
     active_df = df[df['Reversal_Status'] == 'No'].copy()
     active_indices = active_df.index.tolist()
 
     for i in range(len(active_indices) - 1):
-        curr_idx = active_indices[i]
-        nxt_idx = active_indices[i+1]
+        curr_idx, nxt_idx = active_indices[i], active_indices[i+1]
         if (df.at[curr_idx, 'reg_clean'] == df.at[nxt_idx, 'reg_clean'] and 
             df.at[curr_idx, 'Card Number'] == df.at[nxt_idx, 'Card Number'] and 
             df.at[curr_idx, 'DateTime'].date() == df.at[nxt_idx, 'DateTime'].date()):
@@ -69,6 +81,16 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
                     df.at[nxt_idx, 'Is_Excess_Duplicate'] = True
                     df.at[nxt_idx, 'Audit_Reason'] = "Duplicate Transaction"
 
+    # C. NEW: Inconsistency Logic (Different amounts for same plate)
+    # Filter out K0 (Exempts) if you only want to see paying inconsistencies
+    price_counts = df[df['reg_clean'] != ""].groupby('reg_clean')['_amt_num'].nunique()
+    inconsistent_regs = price_counts[price_counts > 1].index.tolist()
+    
+    df.loc[df['reg_clean'].isin(inconsistent_regs), 'Inconsistent_Class'] = 'Yes'
+    # Only tag Audit_Reason if it hasn't been caught by duplicates/reversals yet
+    df.loc[(df['Inconsistent_Class'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Inconsistent Pricing/Class"
+
+    # D. Irregular Amount Check
     def check_irregular(row):
         try:
             amt = abs(float(row['Amount Collected(ZMW)']))
@@ -78,13 +100,13 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
 
     df['Irregular_Charge'] = df.apply(check_irregular, axis=1)
     df.loc[(df['Irregular_Charge'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Irregular Amount"
+    
     return df
 
 # --- 3. UI & STATIC DASHBOARD ---
-st.title("E-toll Analysis Solution") # Main Title updated as requested
+st.title("⚖️ E-toll Analysis Solution")
 
-# --- 3. UI & STATIC DASHBOARD ---
-st.sidebar.title("⚖️ Audit Filters")
+st.sidebar.title("🔍 Audit Filters")
 uploaded_file = st.sidebar.file_uploader("Upload E-toll transaction file", type=["xlsx"])
 
 if uploaded_file:
@@ -94,54 +116,42 @@ if uploaded_file:
     
     df = st.session_state.main_df
     
-    # --- STATIC CALCULATIONS ---
     static_gross = df['_amt_num'].sum()
     static_total_count = len(df)
-    
     static_leakage_df = df[df['Audit_Reason'] != ""]
     static_leakage_total = static_leakage_df['_amt_num'].sum()
     static_leakage_count = len(static_leakage_df)
-    
     static_net = static_gross - static_leakage_total
 
-    # --- DASHBOARD (STATIC) ---
-    st.title("📊 Analysis Summary")
     st.info("The figures below represent the TOTAL analysis of the uploaded file.")
     
     db1, db2, db3 = st.columns(3)
-    # UPDATED: Added transaction counts to metrics
     db1.metric("Overall System Gross", f"K{static_gross:,.2f}", f"{static_total_count} Trans")
     db2.metric("Total Identified Leakage", f"K{static_leakage_total:,.2f}", f"{static_leakage_count} Flags", delta_color="inverse")
     db3.metric("Final Reconciled Revenue", f"K{static_net:,.2f}", "Verified")
 
     st.markdown("---")
 
-    # --- FILTERING SECTION ---
     st.sidebar.subheader("Table Controls")
-    
-    # NEW: Search Filter option
     search_query = st.sidebar.text_input("Search Vehicle Reg", "").strip().upper()
-    
     plazas = ["All Plazas"] + sorted(df['Plaza'].dropna().unique().tolist())
     sel_plaza = st.sidebar.selectbox("Select Plaza", plazas)
     
     filter_mode = st.sidebar.radio(
         "Data View:", 
-        ["Show All Audit Leakages", "Show Entire Dataset", "Duplicates Only", "Reversals Only", "Irregular Only"]
+        ["Show All Audit Leakages", "Show Entire Dataset", "Inconsistencies Only", "Duplicates Only", "Reversals Only", "Irregular Only"]
     )
 
-    # Apply Table Logic
     working_df = df.copy()
-    
-    # Apply Search Filter if text is entered
     if search_query:
         working_df = working_df[working_df['reg_clean'].str.contains(search_query, na=False)]
-    
     if sel_plaza != "All Plazas":
         working_df = working_df[working_df['Plaza'] == sel_plaza]
     
     if filter_mode == "Show All Audit Leakages":
         working_df = working_df[working_df['Audit_Reason'] != ""]
+    elif filter_mode == "Inconsistencies Only":
+        working_df = working_df[working_df['Inconsistent_Class'] == 'Yes']
     elif filter_mode == "Duplicates Only":
         working_df = working_df[working_df['Duplicate'] == 'Yes']
     elif filter_mode == "Reversals Only":
@@ -149,12 +159,10 @@ if uploaded_file:
     elif filter_mode == "Irregular Only":
         working_df = working_df[working_df['Irregular_Charge'] == 'Yes']
 
-    # Display Table
     st.subheader(f"Data Log: {filter_mode}")
     display_cols = [c for c in working_df.columns if c not in ['reg_clean', '_amt_num']]
     st.dataframe(working_df[display_cols], use_container_width=True)
 
-    # --- EXCEL DOWNLOAD ---
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         working_df[display_cols].to_excel(writer, index=False, sheet_name='Audit_Export')
@@ -168,9 +176,7 @@ if uploaded_file:
 
 else:
     st.info("Awaiting file upload to generate station summary.")
-    
-    
-# --- 4. FOOTER ---
+
 st.markdown("""
     <div class="footer">
         Powered by <a href="https://dataamnis.netlify.app/?#" target="_blank" 
