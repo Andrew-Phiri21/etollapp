@@ -123,9 +123,9 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # --- 3. UI & DASHBOARD ---
-st.title("⚖️ E-toll Analysis Solution")
+st.title("E-toll Analysis Solution")
 
-st.sidebar.title("🔍 Audit Filters")
+st.sidebar.title("🔍 Reconciliation Filters")
 uploaded_file = st.sidebar.file_uploader("Upload E-toll transaction file", type=["xlsx"])
 
 if uploaded_file:
@@ -146,12 +146,12 @@ if uploaded_file:
     static_leakage_count = len(static_leakage_df)
     static_net = static_gross - static_leakage_total
 
-    st.info("Metrics reflect the TOTAL file. Reversed/Corrected errors are excluded from leakage counts.")
+    st.info("Metrics reflect the TOTAL in the uploaded transaction file.")
     
     db1, db2, db3 = st.columns(3)
-    db1.metric("Overall System Gross", f"K{static_gross:,.2f}", f"{static_total_count} Trans")
-    db2.metric("Total Identified Leakage", f"K{static_leakage_total:,.2f}", f"{static_leakage_count} Flags", delta_color="inverse")
-    db3.metric("Final Reconciled Revenue", f"K{static_net:,.2f}", "Verified")
+    db1.metric("System Amount", f"K{static_gross:,.2f}", f"{static_total_count} Trans")
+    db2.metric("Flagged Amount", f"K{static_leakage_total:,.2f}", f"{static_leakage_count} Flags", delta_color="inverse")
+    db3.metric("Reconciled Revenue", f"K{static_net:,.2f}", "Verified")
 
     st.markdown("---")
 
