@@ -32,7 +32,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. CORE ORIGINAL LOGIC + NEW INCONSISTENCY CHECK ---
+# --- 2. CORE LOGIC WITH DISCOUNT EXCEPTION ---
 def clean_vehicle_reg(reg):
     if pd.isna(reg): return ""
     reg = str(reg).strip().upper().replace(" ", "")
@@ -46,7 +46,7 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     df['Is_Excess_Duplicate'] = False 
     df['Reversal_Status'] = 'No'
     df['Irregular_Charge'] = 'No'
-    df['Inconsistent_Class'] = 'No' # New Flag
+    df['Inconsistent_Class'] = 'No' 
     df['Audit_Reason'] = ""
     df['_amt_num'] = pd.to_numeric(df['Amount Collected(ZMW)'], errors='coerce').fillna(0)
 
@@ -55,7 +55,7 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[df['Receipt No'].isin(receipts_with_negative), 'Reversal_Status'] = 'Reversed'
     df.loc[df['Reversal_Status'] == 'Reversed', 'Audit_Reason'] = "Reversal Pair"
 
-    # B. Duplicate Check (5-min Rule)
+    # B. Duplicate Check
     df = df.sort_values(by=['reg_clean', 'Card Number', 'DateTime'])
     active_df = df[df['Reversal_Status'] == 'No'].copy()
     active_indices = active_df.index.tolist()
@@ -73,22 +73,42 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
                 amt1, amt2 = df.at[curr_idx, '_amt_num'], df.at[nxt_idx, '_amt_num']
                 if amt1 < amt2:
                     df.at[curr_idx, 'Is_Excess_Duplicate'] = True
-                    df.at[curr_idx, 'Audit_Reason'] = f"Duplicate (Undercharge): K{amt1}<K{amt2}"
+                    df.at[curr_idx, 'Audit_Reason'] = f"Duplicate (Under): K{amt1}<K{amt2}"
                 elif amt1 > amt2:
                     df.at[curr_idx, 'Is_Excess_Duplicate'] = True
-                    df.at[curr_idx, 'Audit_Reason'] = f"Duplicate (Overcharge): K{amt1}>K{amt2}"
+                    df.at[curr_idx, 'Audit_Reason'] = f"Duplicate (Over): K{amt1}>K{amt2}"
                 else:
                     df.at[nxt_idx, 'Is_Excess_Duplicate'] = True
-                    df.at[nxt_idx, 'Audit_Reason'] = "Duplicate Transaction"
+                    df.at[nxt_idx, 'Audit_Reason'] = "Duplicate Trans"
 
-    # C. NEW: Inconsistency Logic (Different amounts for same plate)
-    # Filter out K0 (Exempts) if you only want to see paying inconsistencies
-    price_counts = df[df['reg_clean'] != ""].groupby('reg_clean')['_amt_num'].nunique()
-    inconsistent_regs = price_counts[price_counts > 1].index.tolist()
+    # C. REVISED: Inconsistency Logic with Discount Exception
+    # Discount Brackets: 
+    # Small Vehicles: {2, 5, 20}
+    # Buses/Medium: {10, 15, 40}
+    
+    def is_genuinely_inconsistent(amounts):
+        unique_amts = set(amounts)
+        if len(unique_amts) <= 1: return False
+        
+        # Define valid discount groups
+        small_veh_discount = {2.0, 5.0, 20.0}
+        bus_discount = {10.0, 15.0, 40.0}
+        
+        # If all prices paid belong to the same discount group, it's NOT an inconsistency
+        if unique_amts.issubset(small_veh_discount): return False
+        if unique_amts.issubset(bus_discount): return False
+        
+        return True
+
+    # Group by reg and check prices
+    inconsistent_regs = []
+    grouped = df[df['reg_clean'] != ""].groupby('reg_clean')['_amt_num'].apply(list)
+    for reg, amounts in grouped.items():
+        if is_genuinely_inconsistent(amounts):
+            inconsistent_regs.append(reg)
     
     df.loc[df['reg_clean'].isin(inconsistent_regs), 'Inconsistent_Class'] = 'Yes'
-    # Only tag Audit_Reason if it hasn't been caught by duplicates/reversals yet
-    df.loc[(df['Inconsistent_Class'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Inconsistent Pricing/Class"
+    df.loc[(df['Inconsistent_Class'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Inconsistent Class (Non-Discount)"
 
     # D. Irregular Amount Check
     def check_irregular(row):
@@ -126,9 +146,9 @@ if uploaded_file:
     st.info("The figures below represent the TOTAL analysis of the uploaded file.")
     
     db1, db2, db3 = st.columns(3)
-    db1.metric("Overall System Gross", f"K{static_gross:,.2f}", f"{static_total_count} Trans")
-    db2.metric("Total Identified Leakage", f"K{static_leakage_total:,.2f}", f"{static_leakage_count} Flags", delta_color="inverse")
-    db3.metric("Final Reconciled Revenue", f"K{static_net:,.2f}", "Verified")
+    db1.metric("System Amount", f"K{static_gross:,.2f}", f"{static_total_count} Trans")
+    db2.metric("Amount to Review", f"K{static_leakage_total:,.2f}", f"{static_leakage_count} Flags", delta_color="inverse")
+    db3.metric("Reconciled Amount", f"K{static_net:,.2f}", "Verified")
 
     st.markdown("---")
 
@@ -175,7 +195,7 @@ if uploaded_file:
     )
 
 else:
-    st.info("Awaiting file upload to generate station summary.")
+    st.info("Awaiting file upload...")
 
 st.markdown("""
     <div class="footer">
