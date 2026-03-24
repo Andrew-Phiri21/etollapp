@@ -91,8 +91,8 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
         if len(unique_amts) <= 1: return False
         
         # Define valid discount groups
-        small_veh_discount = {2.0, 5.0, 20.0}
-        bus_discount = {10.0, 15.0, 40.0}
+        small_veh_discount = {2, 5, 20, -2, -5, -20}
+        bus_discount = {10, 15, 40, -10, 15, -40}
         
         # If all prices paid belong to the same discount group, it's NOT an inconsistency
         if unique_amts.issubset(small_veh_discount): return False
