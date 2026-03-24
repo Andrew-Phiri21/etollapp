@@ -114,7 +114,7 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     def check_irregular(row):
         try:
             amt = abs(float(row['Amount Collected(ZMW)']))
-            if amt not in [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 400, 600, 1000, 3000]: return "Yes"
+            if amt not in [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 400, 600, 1000, 3000, -50, -200, -300, -400, -600, -1000, -3000]: return "Yes"
         except: pass
         return "No"
 
