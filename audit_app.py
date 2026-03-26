@@ -114,10 +114,35 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     df['Exempt_Abuse'] = df.apply(check_exempt, axis=1)
     df.loc[(df['Exempt_Abuse'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Potential Exempt Abuse"
 
-    # E. IRREGULAR AMOUNT
-    valid_fees = [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 400, 600, 1000, 3000]
-    df['Irregular_Charge'] = df.apply(lambda r: "Yes" if abs(r['_amt_num']) not in valid_fees and r['Reversal_Status'] == 'No' else "No", axis=1)
-    df.loc[(df['Irregular_Charge'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Irregular Amount - MCS charge"
+    # # E. IRREGULAR AMOUNT
+    # Putting this one on ice fo now. It is missing the MCS charges.
+    # valid_fees = [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 400, 600, 1000, 3000]
+    # df['Irregular_Charge'] = df.apply(lambda r: "Yes" if abs(r['_amt_num']) not in valid_fees and r['Reversal_Status'] == 'No' else "No", axis=1)
+    # df.loc[(df['Irregular_Charge'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Irregular Amount - MCS charge"
+    
+    # return df
+
+# E. PLAZA-AWARE IRREGULAR CHARGE (Updated Feature)
+    def check_irregular_plaza(row):
+        if row['Reversal_Status'] == 'Reversed': return "No"
+        try:
+            amt = abs(float(row['_amt_num']))
+            plaza = str(row.get('Plaza', '')).upper()
+            
+            # Standard fees valid at all stations
+            standard_fees = [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 1000, 3000]
+            # Fees specific only to Michael Chilufya Sata
+            mcs_fees = [400, 600, 800]
+            
+            is_mcs = any(keyword in plaza for keyword in ["MICHAEL", "SATA", "MCS"])
+            
+            if amt in standard_fees: return "No"
+            if is_mcs and amt in mcs_fees: return "No"
+            return "Yes"
+        except: return "No"
+
+    df['Irregular_Charge'] = df.apply(check_irregular_plaza, axis=1)
+    df.loc[(df['Irregular_Charge'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Irregular Amount (MCS fee)"
     
     return df
 
