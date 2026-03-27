@@ -146,6 +146,34 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     
     return df
 
+# # B. REFINED CARD ABUSE LOGIC (Windowed: 1 Hour)
+#     # We only analyze actual cards, excluding 'CASH' or very short strings
+#     card_df = df[df['Card Number'].astype(str).str.len() > 3].sort_values('DateTime').copy()
+    
+#     flagged_indices = []
+#     if not card_df.empty:
+#         # Group by Card and Cashier
+#         grouped = card_df.groupby(['Card Number', 'Cashier'])
+        
+#         for (card, cashier), group in grouped:
+#             group = group.sort_values('DateTime')
+#             for i in range(len(group)):
+#                 start_time = group.iloc[i]['DateTime']
+#                 end_time = start_time + timedelta(hours=1)
+                
+#                 # Identify all transactions for this card/cashier in the following 60 mins
+#                 window = group[(group['DateTime'] >= start_time) & (group['DateTime'] <= end_time)]
+                
+#                 # If the window contains MORE THAN ONE unique vehicle, flag the whole window
+#                 if window['reg_clean'].nunique() > 1:
+#                     flagged_indices.extend(window.index.tolist())
+
+#     # Apply flags to main dataframe
+#     if flagged_indices:
+#         unique_flags = list(set(flagged_indices))
+#         df.loc[unique_flags, 'Card_Abuse'] = 'Yes'
+#         df.loc[unique_flags, 'Audit_Reason'] = "Card Abuse: Multiple vehicles within 1hr"
+        
 # --- 3. UI & ANALYTICS ---
 st.title("E-toll Analysis Solution")
 st.sidebar.title("🔍 Analysis Filters")
@@ -160,10 +188,31 @@ if uploaded_file:
     
     df = st.session_state.main_df
     
+    # --- PRONOUNCED HEADER (Station & Period) ---
+    plazas = [p for p in df['Plaza'].unique() if pd.notna(p)]
+    plaza_text = ", ".join(plazas) if plazas else "Station Not Specified"
+    start_dt = df['DateTime'].min().strftime('%d %B %Y')
+    end_dt = df['DateTime'].max().strftime('%d %B %Y')
+
+    st.markdown(f"""
+        <div class="header-box">
+            <h4 style="margin: 0; color: #006B33; font-family: sans-serif;">📍 Plaza: {plaza_text}</h4>
+            <h4 style="margin: 5px 0 0 0; color: #555; font-weight: normal;">📅 Transaction Period: {start_dt} — {end_dt}</h4>
+        </div>
+    """, unsafe_allow_html=True)
+    
     # 1. SIDEBAR CONTROLS
     st.sidebar.subheader("Search & Filter")
     search_query = st.sidebar.text_input("Search Vehicle Reg", "").strip().upper()
-    filter_mode = st.sidebar.radio("Data View:", ["Flagged Transactions", "All Data", "Exempt Abuse", "Inconsistencies", "Duplicates", "Irregular Amounts"])
+    # filter_mode = st.sidebar.radio("Data View:", ["Flagged Transactions", "All Data", "Exempt Abuse", "Inconsistencies", "Duplicates", "Irregular Amounts"])
+    
+    # SIDEBAR CONTROLS
+    # Activate once we want to detect potential system downtime based on transaction gaps. This will be a crucial feature for operational monitoring and ensuring data integrity, as prolonged gaps in transactions could indicate system outages or data collection issues.
+    # st.sidebar.subheader("System Health Settings")
+    # downtime_threshold = st.sidebar.slider("Downtime Threshold (Minutes)", 15, 120, 30, help="Gaps longer than this will be flagged as potential system downtime.")
+    
+    st.sidebar.subheader("Data View")
+    filter_mode = st.sidebar.radio("View Only:", ["Flagged Transactions", "All Data", "Exempt Abuse", "Inconsistencies", "Duplicates", "Irregular Amounts"])
 
     working_df = df.copy()
     if search_query:
@@ -178,7 +227,7 @@ if uploaded_file:
     gross, leakage_df = df['_amt_num'].sum(), df[df['Audit_Reason'] != ""]
     leakage_total = leakage_df['_amt_num'].sum()
     db1, db2, db3 = st.columns(3)
-    db1.metric("System Amount", f"K{gross:,.2f}", f"{len(df)} Trans")
+    db1.metric("System Amount", f"K{gross:,.2f}", f"{len(df)} Transactions")
     db2.metric("Flagged Transactions", f"K{leakage_total:,.2f}", f"{len(leakage_df)} Flags", delta_color="inverse")
     db3.metric("Reconciled Revenue", f"K{gross - leakage_total:,.2f}", "Verified")
 
@@ -243,6 +292,76 @@ if uploaded_file:
         cash_s = df.groupby('Cashier').agg(Total=('Receipt No', 'count'), Flags=('Audit_Reason', lambda x: (x != "").sum())).reset_index()
         cash_s['Risk'] = (cash_s['Flags'] / cash_s['Total']) * 100
         st.table(cash_s.sort_values(by='Flags', ascending=False).head(10).style.format({"Risk": "{:.1f}%"}))
+
+## --- UPDATED: HOURLY TRAFFIC & LEAKAGE HEATMAP ---
+    st.markdown("---")
+    st.subheader("⏰ Hourly Traffic & Flagged Transactions Heatmap")
+    
+    # Process data for the heatmap
+    df['Hour'] = df['DateTime'].dt.hour
+    # Ensuring Audit_Reason is treated as a string to count non-empty flags correctly
+    hourly_stats = df.groupby('Hour').agg(
+        Total_Traffic=('Receipt No', 'count'),
+        Flagged_Traffic=('Audit_Reason', lambda x: (x.astype(str).str.len() > 0).sum())
+    ).reindex(range(24), fill_value=0)
+
+    fig_h, ax_h = plt.subplots(figsize=(12, 5))
+    
+    # Primary Axis: Total Traffic (Gray Bars)
+    ax_h.bar(hourly_stats.index, hourly_stats['Total_Traffic'], color="#82b892", label='Traffic', alpha=0.8)
+    ax_h.set_ylabel("Total Traffic Volume", fontweight='bold', color='#666')
+    ax_h.set_ylim(0, hourly_stats['Total_Traffic'].max() * 1.1) # Add some head room
+
+    # Secondary Axis: Flagged Count (Red Trend Line)
+    # This creates a separate scale so 10 transactions are clearly visible against 700
+    ax2 = ax_h.twinx()
+    ax2.plot(hourly_stats.index, hourly_stats['Flagged_Traffic'], color='#FF4B4B', marker='o', linewidth=0, label='Flag Count')
+    ax2.set_ylabel("Flagged Transactions", color='#FF4B4B', fontweight='bold')
+    ax2.set_ylim(0, max(hourly_stats['Flagged_Traffic'].max() * 1.5, 5)) # Scale specifically for flags
+
+    # Add the "Red Flag" markers and blocks
+    for i, count in enumerate(hourly_stats['Flagged_Traffic']):
+        if count > 0:
+            # Add a red block/marker at the top of the traffic bar
+            ax_h.bar(i, count, color='#FF4B4B', alpha=0.9) 
+            # Place a visual indicator above the bar
+            ax2.annotate(f"🚩 {count}", (i, count), textcoords="offset points", xytext=(0,5), 
+                         ha='center', color='#FF4B4B', fontweight='bold', fontsize=10)
+
+    ax_h.set_xticks(range(24))
+    ax_h.set_xticklabels([f"{h:02d}:00" for h in range(24)], rotation=45)
+    ax_h.set_xlabel("Hour of Day (24h)", fontweight='bold')
+    
+    # Combine legends from both axes
+    lines, labels = ax_h.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax_h.legend(lines + lines2, labels + labels2, loc='upper left')
+    
+    plt.title("Hourly Operational Risk Profile (Red Markers = Flagged Transactions)", fontsize=13, fontweight='bold')
+    st.pyplot(fig_h)
+
+# # --- NEW: SYSTEM DOWNTIME TIMELINE ---
+#       To consider in the next increment 
+#     st.markdown("---")
+#     st.subheader("📡 System Health: Downtime Detection")
+    
+#     # Logic to check for long intervals between transactions
+#     time_sorted = df.sort_values('DateTime').copy()
+#     time_sorted['Prev_Time'] = time_sorted['DateTime'].shift(1)
+#     time_sorted['Gap'] = (time_sorted['DateTime'] - time_sorted['Prev_Time']).dt.total_seconds() / 60
+    
+#     downtime_events = time_sorted[time_sorted['Gap'] >= downtime_threshold].copy()
+    
+#     if not downtime_events.empty:
+#         st.warning(f"Detected {len(downtime_events)} potential downtime periods exceeding {downtime_threshold} minutes.")
+#         downtime_log = downtime_events[['Prev_Time', 'DateTime', 'Gap', 'Plaza']].rename(columns={
+#             'Prev_Time': 'Last Transaction Before Gap',
+#             'DateTime': 'First Transaction After Gap',
+#             'Gap': 'Duration (Minutes)'
+#         })
+#         st.table(downtime_log.style.format({"Duration (Minutes)": "{:.1f}"}))
+#     else:
+#         st.success(f"No system gaps exceeding {downtime_threshold} minutes detected.")
 
 else:
     st.info("Awaiting file upload for analysis...")
