@@ -3,8 +3,6 @@ import pandas as pd
 import io
 import matplotlib.pyplot as plt
 from datetime import timedelta, datetime
-df = pd.read_excel("e_toll_data.xlsx")
-print(df.head())
 
 # --- 1. SETTINGS & VISIBILITY ---
 st.set_page_config(page_title="E-toll Analysis Solution", page_icon="⚖️", layout="wide")
@@ -118,69 +116,35 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
 
     # # E. IRREGULAR AMOUNT
     # Putting this one on ice fo now. It is missing the MCS charges.
-    # valid_fees = [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 400, 490, 600, 820, 1000, 3000]
+    # valid_fees = [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 400, 600, 1000, 3000]
     # df['Irregular_Charge'] = df.apply(lambda r: "Yes" if abs(r['_amt_num']) not in valid_fees and r['Reversal_Status'] == 'No' else "No", axis=1)
     # df.loc[(df['Irregular_Charge'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Irregular Amount - MCS charge"
     
     # return df
 
-# E. PLAZA-AWARE IRREGULAR CHARGE (Refactored & Station-Aware)
-def check_irregular_plaza(row):
-    if row['Reversal_Status'] == 'Reversed':
-        return "No"
-    
-    try:
-        amt = abs(float(row['_amt_num']))
-        plaza = str(row.get('Plaza', '')).upper()
-        
-        # 1. Base standard fees valid across all standard toll gates
-        standard_fees = {0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 1000, 3000}
-        
-        # 2. Station-specific fee rule maps (Easily extensible for future gates)
-        plaza_fee_rules = {
-            "MCS": {
-                "keywords": ["MICHAEL", "SATA", "MCS"],
-                "fees": {400, 600, 800},
-                "label": "Michael Chilufya Sata"
-            },
-            "MAZOKA": {
-                "keywords": ["ANDERSON", "MAZOKA", "MAZOKA"],
-                "fees": {490, 820, 1300},
-                "label": "Anderson Mazoka"
-            }
-        }
-        
-        # Check standard fees first
-        if amt in standard_fees:
-            return "No"
+# E. PLAZA-AWARE IRREGULAR CHARGE (Updated Feature)
+    def check_irregular_plaza(row):
+        if row['Reversal_Status'] == 'Reversed': return "No"
+        try:
+            amt = abs(float(row['_amt_num']))
+            plaza = str(row.get('Plaza', '')).upper()
             
-        # Check plaza-specific fee allowances
-        for gate_key, rule in plaza_fee_rules.items():
-            is_matched_gate = any(keyword in plaza for keyword in rule["keywords"])
-            if is_matched_gate and amt in rule["fees"]:
-                return "No"
-                
-        return "Yes"
-    except (ValueError, TypeError):
-        return "No"
+            # Standard fees valid at all stations
+            standard_fees = [0, 2, 5, 10, 15, 20, 40, 50, 200, 300, 1000, 3000]
+            # Fees specific only to Michael Chilufya Sata
+            mcs_fees = [400, 600, 800]
+            
+            is_mcs = any(keyword in plaza for keyword in ["MICHAEL", "SATA", "MCS"])
+            
+            if amt in standard_fees: return "No"
+            if is_mcs and amt in mcs_fees: return "No"
+            return "Yes"
+        except: return "No"
 
-# Apply the updated plaza-aware audit logic
-df['Irregular_Charge'] = df.apply(check_irregular_plaza, axis=1)
-
-# Dynamic Audit Reason Tagging
-def assign_irregular_audit_reason(row):
-    if row['Irregular_Charge'] == 'Yes' and row['Audit_Reason'] == "":
-        plaza = str(row.get('Plaza', '')).upper()
-        if any(k in plaza for k in ["MICHAEL", "SATA", "MCS"]):
-            return "Irregular Amount (MCS fee)"
-        elif any(k in plaza for k in ["ANDERSON", "MAZOKA"]):
-            return "Irregular Amount (Mazoka fee)"
-        return "Irregular Amount"
-    return row['Audit_Reason']
-
-df['Audit_Reason'] = df.apply(assign_irregular_audit_reason, axis=1)
-
-
+    df['Irregular_Charge'] = df.apply(check_irregular_plaza, axis=1)
+    df.loc[(df['Irregular_Charge'] == 'Yes') & (df['Audit_Reason'] == ""), 'Audit_Reason'] = "Irregular Amount (MCS fee)"
+    
+    return df
 
 # # B. REFINED CARD ABUSE LOGIC (Windowed: 1 Hour)
 #     # We only analyze actual cards, excluding 'CASH' or very short strings
